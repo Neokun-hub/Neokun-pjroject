@@ -1,0 +1,5 @@
+{
+  "name": "Fluctus Photobooth Queue System",
+  "description": "A beautiful, ocean-themed photobooth queue management system featuring registration, live display, and admin controls with WhatsApp notification integration.",
+  "requestFramePermissions": []
+}
