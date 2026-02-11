@@ -24,6 +24,7 @@ const App: React.FC = () => {
 
   const channelRef = useRef<any>(null);
   
+  // Use a ref to always have access to current state for broadcasting
   const stateRef = useRef({ queue, currentNumber, lastNumber, callingStartedAt });
   useEffect(() => {
     stateRef.current = { queue, currentNumber, lastNumber, callingStartedAt };
@@ -67,13 +68,12 @@ const App: React.FC = () => {
     setIsInitialized(true);
   }, []);
 
-  const broadcastState = useCallback((forceState?: any) => {
-    const dataToSend = forceState || stateRef.current;
+  const broadcastState = useCallback((payload: any) => {
     if (channelRef.current && connectionStatus === 'CONNECTED') {
         channelRef.current.send({
             type: 'broadcast',
             event: 'queue-update',
-            payload: dataToSend
+            payload
         });
     }
   }, [connectionStatus]);
@@ -92,22 +92,20 @@ const App: React.FC = () => {
     const channel = supabase
       .channel(`room-${dbConfig.roomId}`)
       .on('broadcast', { event: 'queue-update' }, ({ payload }) => {
-        if (payload.queue) {
-            setQueue(payload.queue);
-            setCurrentNumber(payload.currentNumber);
-            setLastNumber(payload.lastNumber);
-            setCallingStartedAt(payload.callingStartedAt);
+        if (payload) {
+            if (payload.queue !== undefined) setQueue(payload.queue);
+            if (payload.currentNumber !== undefined) setCurrentNumber(payload.currentNumber);
+            if (payload.lastNumber !== undefined) setLastNumber(payload.lastNumber);
+            if (payload.callingStartedAt !== undefined) setCallingStartedAt(payload.callingStartedAt);
             setLastSyncTime(Date.now());
         }
       })
       .on('broadcast', { event: 'request-sync' }, () => {
-        if (stateRef.current.queue.length > 0) {
-            channel.send({
-                type: 'broadcast',
-                event: 'queue-update',
-                payload: stateRef.current
-            });
-        }
+        channel.send({
+            type: 'broadcast',
+            event: 'queue-update',
+            payload: stateRef.current
+        });
       })
       .subscribe((status) => {
         if (status === 'SUBSCRIBED') {
@@ -146,42 +144,44 @@ const App: React.FC = () => {
     setQueue(newQueue);
     setLastNumber(nextNo);
     
-    broadcastState({ queue: newQueue, currentNumber, lastNumber: nextNo, callingStartedAt });
+    broadcastState({ 
+      queue: newQueue, 
+      currentNumber, 
+      lastNumber: nextNo, 
+      callingStartedAt 
+    });
     return nextNo;
   }, [queue, lastNumber, currentNumber, callingStartedAt, broadcastState]);
 
   const updateStatus = useCallback((id: string, status: QueueStatus) => {
-    setQueue(prev => {
-      const newQueue = prev.map(item => item.id === id ? { ...item, status } : item);
-      let newCurrentNumber = currentNumber;
-      let newCallingStartedAt = callingStartedAt;
+    const now = Date.now();
+    let newCurrentNumber = currentNumber;
+    let newCallingStartedAt = callingStartedAt;
 
-      if (status === QueueStatus.CALLING) {
-        const item = newQueue.find(i => i.id === id);
-        if (item) {
+    const newQueue = queue.map(item => {
+      if (item.id === id) {
+        if (status === QueueStatus.CALLING) {
           newCurrentNumber = item.number;
-          newCallingStartedAt = Date.now();
-        }
-      } else if (status === QueueStatus.COMPLETED || status === QueueStatus.SKIPPED) {
-        // Clear countdown if current item is completed
-        const item = newQueue.find(i => i.id === id);
-        if (item && item.number === currentNumber) {
+          newCallingStartedAt = now;
+        } else if (item.number === currentNumber && (status === QueueStatus.COMPLETED || status === QueueStatus.SKIPPED)) {
           newCallingStartedAt = null;
         }
+        return { ...item, status };
       }
-
-      setCurrentNumber(newCurrentNumber);
-      setCallingStartedAt(newCallingStartedAt);
-      
-      broadcastState({ 
-        queue: newQueue, 
-        currentNumber: newCurrentNumber, 
-        lastNumber, 
-        callingStartedAt: newCallingStartedAt 
-      });
-      return newQueue;
+      return item;
     });
-  }, [currentNumber, lastNumber, callingStartedAt, broadcastState]);
+
+    setQueue(newQueue);
+    setCurrentNumber(newCurrentNumber);
+    setCallingStartedAt(newCallingStartedAt);
+    
+    broadcastState({ 
+      queue: newQueue, 
+      currentNumber: newCurrentNumber, 
+      lastNumber, 
+      callingStartedAt: newCallingStartedAt 
+    });
+  }, [queue, currentNumber, lastNumber, callingStartedAt, broadcastState]);
 
   const saveDbConfig = (config: DbConfig | null) => {
     setDbConfig(config);
@@ -211,36 +211,6 @@ const App: React.FC = () => {
           <div key={i} className="bubble" style={{ left: `${(i * 15) % 100}%`, width: '20px', height: '20px', animationDelay: `${i * 1}s` }} />
         ))}
       </div>
-
-      {showGuide && !dbConfig && (
-        <div className="fixed top-24 right-6 z-[60] w-72 animate-in slide-in-from-right-10 duration-500">
-            <div className="ocean-glass p-5 rounded-3xl border border-cyan-400/30 shadow-2xl relative">
-                <button onClick={() => setShowGuide(false)} className="absolute top-3 right-3 text-white/40 hover:text-white">✕</button>
-                <div className="flex items-start gap-3">
-                    <div className="p-2 bg-cyan-400 rounded-xl text-sky-950">
-                        <Info size={20} />
-                    </div>
-                    <div>
-                        <h4 className="text-sm font-black text-cyan-400 mb-1 uppercase tracking-tight">Setup Database 🌊</h4>
-                        <p className="text-[11px] text-white/70 leading-relaxed mb-3">
-                            Pastikan HP & Laptop pakai <b>Room Name</b> yang sama agar data muncul otomatis!
-                        </p>
-                        <button onClick={() => { setCurrentView('ADMIN'); setShowGuide(false); }} className="flex items-center gap-2 text-[10px] font-black bg-cyan-400 text-sky-950 px-3 py-2 rounded-lg hover:bg-cyan-300 transition-all uppercase">
-                            Ke Menu Admin <ExternalLink size={12} />
-                        </button>
-                    </div>
-                </div>
-            </div>
-        </div>
-      )}
-
-      {lastSyncTime && (
-          <div key={lastSyncTime} className="fixed bottom-32 right-6 z-[60] animate-in fade-in slide-in-from-bottom-4 duration-500">
-              <div className="bg-emerald-500 text-white text-[10px] font-black px-4 py-2 rounded-full shadow-lg flex items-center gap-2">
-                  <RefreshCw size={12} className="animate-spin" /> DATA TER-SINKRONISASI
-              </div>
-          </div>
-      )}
 
       <nav className="fixed bottom-8 left-1/2 -translate-x-1/2 ocean-glass px-10 py-5 rounded-[2.5rem] shadow-2xl z-50 flex gap-12 items-center border border-white/20 transition-all active:scale-95">
         <button onClick={() => setCurrentView('REGISTRATION')} className={`flex flex-col items-center gap-1.5 transition-all ${currentView === 'REGISTRATION' ? 'text-cyan-400 scale-125' : 'text-white/30 hover:text-white/60'}`}>
