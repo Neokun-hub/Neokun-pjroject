@@ -17,8 +17,15 @@ export interface QueueItem {
 
 export type ViewType = 'REGISTRATION' | 'DISPLAY' | 'ADMIN';
 
+export interface DbConfig {
+  url: string;
+  key: string;
+  roomId: string;
+}
+
 export interface AppState {
   queue: QueueItem[];
   currentNumber: number | null;
   lastNumber: number;
+  dbConfig: DbConfig | null;
 }
