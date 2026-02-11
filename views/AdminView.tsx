@@ -1,7 +1,7 @@
 
 import React, { useMemo, useState, useEffect } from 'react';
 import { QueueItem, QueueStatus, DbConfig } from '../types';
-import { Phone, Check, Trash2, ArrowRightCircle, MessageCircle, Database, Share2, X, Info, Clock, Bell, BellOff, ExternalLink } from 'lucide-react';
+import { Phone, Check, Trash2, ArrowRightCircle, MessageCircle, Database, Share2, X, Info, Clock, Bell, BellOff } from 'lucide-react';
 import QRCode from 'qrcode';
 
 interface AdminViewProps {
@@ -54,14 +54,24 @@ const AdminView: React.FC<AdminViewProps> = ({ queue, onUpdateStatus, onReset, d
   }, [showQrModal, dbConfig]);
 
   const sendWhatsApp = (item: QueueItem) => {
-    const cleanPhone = item.phone.replace(/[^0-9]/g, '');
-    // Formatting number: ensure it starts with country code (default 62 if starts with 0)
-    const formattedPhone = cleanPhone.startsWith('0') ? '62' + cleanPhone.slice(1) : cleanPhone;
+    // 1. Ambil hanya angka saja
+    let cleanPhone = item.phone.replace(/\D/g, '');
     
-    const msg = encodeURIComponent(`🌊 Halo *${item.name}*!\n\nNomer antrian *${item.number}* dipanggil! ✨\nSilakan segera ke Photobooth ya.`);
+    // 2. Normalisasi nomor Indonesia: Jika awali 0, ganti ke 62
+    if (cleanPhone.startsWith('0')) {
+      cleanPhone = '62' + cleanPhone.substring(1);
+    }
     
-    // Using api.whatsapp.com which is often more reliable than wa.me on desktops
-    const waUrl = `https://api.whatsapp.com/send?phone=${formattedPhone}&text=${msg}`;
+    // 3. Pastikan tidak ada karakter + di depan untuk link wa.me
+    const finalPhone = cleanPhone;
+    
+    const messageText = `🌊 Halo *${item.name}*!\n\nNomer antrian *${item.number}* sedang dipanggil! ✨\nSilakan segera ke Photobooth ya. Terima kasih!`;
+    const encodedMsg = encodeURIComponent(messageText);
+    
+    // 4. Gunakan wa.me yang paling standar untuk deep-linking chat
+    const waUrl = `https://wa.me/${finalPhone}?text=${encodedMsg}`;
+    
+    console.log("Triggering WA for:", finalPhone);
     window.open(waUrl, '_blank');
   };
 
@@ -71,8 +81,8 @@ const AdminView: React.FC<AdminViewProps> = ({ queue, onUpdateStatus, onReset, d
       onUpdateStatus(nextItem.id, QueueStatus.CALLING);
       
       if (autoNotify) {
-        // Short delay to let the UI update first
-        setTimeout(() => sendWhatsApp(nextItem), 600);
+        // Beri sedikit delay agar state UI ter-update dulu
+        setTimeout(() => sendWhatsApp(nextItem), 800);
       }
     }
   };
@@ -94,12 +104,17 @@ const AdminView: React.FC<AdminViewProps> = ({ queue, onUpdateStatus, onReset, d
 
   return (
     <div className="space-y-8">
-      {/* Alert Info for WhatsApp limitation */}
-      <div className="bg-amber-400/10 border border-amber-400/30 p-4 rounded-2xl flex items-start gap-3 animate-in fade-in slide-in-from-top-4 duration-500">
-        <Info className="text-amber-400 shrink-0 mt-0.5" size={18} />
-        <p className="text-[11px] text-amber-200/80 leading-relaxed font-medium">
-          <strong className="text-amber-400">INFO WHATSAPP:</strong> Karena kebijakan keamanan WhatsApp, sistem hanya bisa menyiapkan pesan otomatis. Anda tetap harus menekan tombol <span className="underline decoration-amber-400">Kirim/Send</span> di aplikasi WhatsApp setelah jendela terbuka.
-        </p>
+      {/* Warning Info */}
+      <div className="bg-sky-400/10 border border-sky-400/30 p-4 rounded-2xl flex items-start gap-3">
+        <Info className="text-sky-400 shrink-0 mt-0.5" size={18} />
+        <div className="space-y-1">
+          <p className="text-[11px] text-sky-200/90 leading-relaxed font-bold">
+            TIPS WHATSAPP:
+          </p>
+          <p className="text-[10px] text-sky-200/60 leading-relaxed">
+            Jika hanya membuka halaman utama WA, pastikan nomor yang didaftarkan sudah benar (contoh: 0812...). Sistem akan otomatis mengubahnya ke kode negara 62.
+          </p>
+        </div>
       </div>
 
       <div className="ocean-glass p-6 rounded-[2rem] flex flex-wrap items-center justify-between gap-4 border border-white/20">
@@ -110,7 +125,7 @@ const AdminView: React.FC<AdminViewProps> = ({ queue, onUpdateStatus, onReset, d
             <button 
               onClick={() => setAutoNotify(!autoNotify)} 
               className={`flex items-center gap-2 px-4 py-3 rounded-xl text-[10px] font-black tracking-widest transition-all border ${
-                autoNotify ? 'bg-emerald-500/20 text-emerald-400 border-emerald-500/50 shadow-[0_0_15px_rgba(52,211,153,0.2)]' : 'bg-white/5 text-white/30 border-white/10'
+                autoNotify ? 'bg-emerald-500/20 text-emerald-400 border-emerald-500/50 shadow-lg shadow-emerald-500/10' : 'bg-white/5 text-white/30 border-white/10'
               }`}
             >
                 {autoNotify ? <Bell size={14} className="animate-bounce" /> : <BellOff size={14} />}
@@ -143,9 +158,9 @@ const AdminView: React.FC<AdminViewProps> = ({ queue, onUpdateStatus, onReset, d
                         <span className="text-6xl font-black">{item.number < 10 ? `0${item.number}` : item.number}</span>
                         <div>
                             <div className="font-black text-xl">{item.name}</div>
-                            <div className="text-[10px] font-bold opacity-60 mb-1">{item.phone}</div>
+                            <div className="text-[10px] font-bold opacity-60">{item.phone}</div>
                             {timeLeft !== null && (
-                                <div className={`flex items-center gap-1.5 px-3 py-1 rounded-full text-[10px] font-black tracking-widest border ${timeLeft <= 10 ? 'bg-rose-500 text-white animate-pulse border-none shadow-lg shadow-rose-500/40' : 'bg-sky-950/10 border-sky-950/20'}`}>
+                                <div className={`mt-2 flex items-center gap-1.5 px-3 py-1 rounded-full text-[10px] font-black tracking-widest border ${timeLeft <= 10 ? 'bg-rose-500 text-white animate-pulse border-none shadow-lg shadow-rose-500/40' : 'bg-sky-950/10 border-sky-950/20'}`}>
                                     <Clock size={12} /> {formatTime(timeLeft)}
                                 </div>
                             )}
@@ -186,11 +201,6 @@ const AdminView: React.FC<AdminViewProps> = ({ queue, onUpdateStatus, onReset, d
                         <button onClick={() => onUpdateStatus(item.id, QueueStatus.CALLING)} className="p-2 text-cyan-400 hover:bg-cyan-400 hover:text-sky-900 rounded-lg transition-all"><ArrowRightCircle size={20} /></button>
                     </div>
                 ))}
-                {waitingList.length === 0 && (
-                  <div className="p-12 text-center">
-                    <p className="text-white/20 font-black text-xs uppercase tracking-widest italic">Belum ada antrian</p>
-                  </div>
-                )}
             </div>
         </div>
       </div>
@@ -219,21 +229,6 @@ const AdminView: React.FC<AdminViewProps> = ({ queue, onUpdateStatus, onReset, d
                   <button onClick={handleSaveDb} className="w-full py-4 bg-cyan-400 text-sky-950 font-black rounded-xl hover:bg-cyan-300 transition-all shadow-xl shadow-cyan-400/20 active:scale-95">SIMPAN & CONNECT</button>
               </div>
           </div>
-      )}
-
-      {showQrModal && (
-        <div className="fixed inset-0 z-[100] flex items-center justify-center p-6 bg-sky-950/80 backdrop-blur-md animate-in fade-in duration-300">
-          <div className="ocean-glass w-full max-w-sm p-8 rounded-[2.5rem] border border-white/20 shadow-2xl text-center space-y-6">
-             <div className="flex justify-between items-center mb-2">
-                <h2 className="text-xl font-black tracking-widest text-cyan-400">QR CODE</h2>
-                <button onClick={() => setShowQrModal(false)}><X size={24} /></button>
-             </div>
-             <div className="bg-white p-6 rounded-3xl inline-block shadow-2xl">
-                {qrDataUrl && <img src={qrDataUrl} alt="QR Code" className="w-full h-auto" />}
-             </div>
-             <p className="text-xs text-white/50 font-bold uppercase tracking-widest">Scan untuk pendaftaran pengunjung</p>
-          </div>
-        </div>
       )}
     </div>
   );
