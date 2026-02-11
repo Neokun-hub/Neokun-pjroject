@@ -28,4 +28,5 @@ export interface AppState {
   currentNumber: number | null;
   lastNumber: number;
   dbConfig: DbConfig | null;
+  callingStartedAt: number | null;
 }

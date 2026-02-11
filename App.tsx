@@ -1,10 +1,10 @@
 
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { ViewType, QueueItem, QueueStatus, DbConfig } from './types';
 import RegistrationView from './views/RegistrationView';
 import DisplayView from './views/DisplayView';
 import AdminView from './views/AdminView';
-import { LayoutDashboard, Settings, UserPlus, Waves, Cloud, CloudOff } from 'lucide-react';
+import { LayoutDashboard, Settings, UserPlus, Waves, Cloud, Info, Wifi, WifiOff, ExternalLink, RefreshCw } from 'lucide-react';
 import { createClient, SupabaseClient } from '@supabase/supabase-js';
 
 const STORAGE_KEY = 'fluctus_storage_v4';
@@ -14,114 +14,193 @@ const App: React.FC = () => {
   const [queue, setQueue] = useState<QueueItem[]>([]);
   const [currentNumber, setCurrentNumber] = useState<number | null>(null);
   const [lastNumber, setLastNumber] = useState<number>(0);
+  const [callingStartedAt, setCallingStartedAt] = useState<number | null>(null);
   const [dbConfig, setDbConfig] = useState<DbConfig | null>(null);
   const [supabase, setSupabase] = useState<SupabaseClient | null>(null);
+  const [connectionStatus, setConnectionStatus] = useState<'DISCONNECTED' | 'CONNECTING' | 'CONNECTED'>('DISCONNECTED');
   const [isInitialized, setIsInitialized] = useState(false);
+  const [showGuide, setShowGuide] = useState(false);
+  const [lastSyncTime, setLastSyncTime] = useState<number | null>(null);
 
-  // 1. Initial Load
+  const channelRef = useRef<any>(null);
+  
+  const stateRef = useRef({ queue, currentNumber, lastNumber, callingStartedAt });
   useEffect(() => {
+    stateRef.current = { queue, currentNumber, lastNumber, callingStartedAt };
+  }, [queue, currentNumber, lastNumber, callingStartedAt]);
+
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const viewParam = params.get('view')?.toUpperCase();
+    if (viewParam === 'ADMIN' || viewParam === 'DISPLAY' || viewParam === 'REGISTRATION') {
+        setCurrentView(viewParam as ViewType);
+    }
+
     const savedData = localStorage.getItem(STORAGE_KEY);
+    let initialConfig: DbConfig | null = null;
+    
     if (savedData) {
       try {
         const parsed = JSON.parse(savedData);
         if (parsed.queue) setQueue(parsed.queue);
         if (parsed.currentNumber !== undefined) setCurrentNumber(parsed.currentNumber);
         if (parsed.lastNumber !== undefined) setLastNumber(parsed.lastNumber);
+        if (parsed.callingStartedAt !== undefined) setCallingStartedAt(parsed.callingStartedAt);
         if (parsed.dbConfig) {
-            setDbConfig(parsed.dbConfig);
-            // Inisialisasi Supabase jika ada config
-            const client = createClient(parsed.dbConfig.url, parsed.dbConfig.key);
-            setSupabase(client);
+          initialConfig = parsed.dbConfig;
+          setDbConfig(initialConfig);
         }
       } catch (e) { console.error(e); }
     }
     
-    // Check URL for Room ID (to allow easy sharing)
-    const params = new URLSearchParams(window.location.search);
-    const room = params.get('room');
-    if (room && !dbConfig) {
-        // Jika ada room di URL tapi belum ada config, kita bisa simpan roomId-nya
-        // (Namun tetap butuh URL & Key Supabase dari Admin pertama kali)
+    const roomFromUrl = params.get('room');
+    if (roomFromUrl && initialConfig) {
+        const updatedConfig = { ...initialConfig, roomId: roomFromUrl };
+        setDbConfig(updatedConfig);
+        setSupabase(createClient(updatedConfig.url, updatedConfig.key));
+    } else if (initialConfig) {
+        setSupabase(createClient(initialConfig.url, initialConfig.key));
+    } else {
+        setTimeout(() => setShowGuide(true), 1500);
     }
 
     setIsInitialized(true);
   }, []);
 
-  // 2. Real-time Subscription (Supabase)
+  const broadcastState = useCallback((forceState?: any) => {
+    const dataToSend = forceState || stateRef.current;
+    if (channelRef.current && connectionStatus === 'CONNECTED') {
+        channelRef.current.send({
+            type: 'broadcast',
+            event: 'queue-update',
+            payload: dataToSend
+        });
+    }
+  }, [connectionStatus]);
+
   useEffect(() => {
-    if (!supabase || !dbConfig?.roomId) return;
+    if (!supabase || !dbConfig?.roomId) {
+      setConnectionStatus('DISCONNECTED');
+      return;
+    }
+
+    setConnectionStatus('CONNECTING');
+    if (channelRef.current) {
+        supabase.removeChannel(channelRef.current);
+    }
 
     const channel = supabase
       .channel(`room-${dbConfig.roomId}`)
       .on('broadcast', { event: 'queue-update' }, ({ payload }) => {
-        setQueue(payload.queue);
-        setCurrentNumber(payload.currentNumber);
-        setLastNumber(payload.lastNumber);
+        if (payload.queue) {
+            setQueue(payload.queue);
+            setCurrentNumber(payload.currentNumber);
+            setLastNumber(payload.lastNumber);
+            setCallingStartedAt(payload.callingStartedAt);
+            setLastSyncTime(Date.now());
+        }
       })
-      .subscribe();
+      .on('broadcast', { event: 'request-sync' }, () => {
+        if (stateRef.current.queue.length > 0) {
+            channel.send({
+                type: 'broadcast',
+                event: 'queue-update',
+                payload: stateRef.current
+            });
+        }
+      })
+      .subscribe((status) => {
+        if (status === 'SUBSCRIBED') {
+            setConnectionStatus('CONNECTED');
+            setTimeout(() => {
+                channel.send({ type: 'broadcast', event: 'request-sync', payload: {} });
+            }, 500);
+        } else {
+            setConnectionStatus('DISCONNECTED');
+        }
+      });
 
+    channelRef.current = channel;
     return () => { supabase.removeChannel(channel); };
-  }, [supabase, dbConfig]);
+  }, [supabase, dbConfig?.roomId]);
 
-  // 3. Local Auto Save & Broadcast
   useEffect(() => {
     if (isInitialized) {
-      const data = { queue, currentNumber, lastNumber, dbConfig };
+      const data = { queue, currentNumber, lastNumber, dbConfig, callingStartedAt };
       localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
-      
-      // Jika online, kirim ke perangkat lain
-      if (supabase && dbConfig?.roomId) {
-        supabase.channel(`room-${dbConfig.roomId}`).send({
-          type: 'broadcast',
-          event: 'queue-update',
-          payload: { queue, currentNumber, lastNumber }
-        });
-      }
-      
-      window.dispatchEvent(new Event('storage'));
     }
-  }, [queue, currentNumber, lastNumber, dbConfig, isInitialized, supabase]);
+  }, [queue, currentNumber, lastNumber, dbConfig, callingStartedAt, isInitialized]);
 
   const addQueue = useCallback((name: string, phone: string) => {
     const nextNo = lastNumber + 1;
     const newItem: QueueItem = {
-      id: `q-${Date.now()}`,
+      id: `q-${Date.now()}-${Math.random().toString(36).substr(2, 4)}`,
       number: nextNo,
       name,
       phone,
       timestamp: Date.now(),
       status: QueueStatus.WAITING
     };
-    setQueue(prev => [...prev, newItem]);
+    
+    const newQueue = [...queue, newItem];
+    setQueue(newQueue);
     setLastNumber(nextNo);
+    
+    broadcastState({ queue: newQueue, currentNumber, lastNumber: nextNo, callingStartedAt });
     return nextNo;
-  }, [lastNumber]);
+  }, [queue, lastNumber, currentNumber, callingStartedAt, broadcastState]);
 
   const updateStatus = useCallback((id: string, status: QueueStatus) => {
     setQueue(prev => {
       const newQueue = prev.map(item => item.id === id ? { ...item, status } : item);
+      let newCurrentNumber = currentNumber;
+      let newCallingStartedAt = callingStartedAt;
+
       if (status === QueueStatus.CALLING) {
         const item = newQueue.find(i => i.id === id);
-        if (item) setCurrentNumber(item.number);
+        if (item) {
+          newCurrentNumber = item.number;
+          newCallingStartedAt = Date.now();
+        }
+      } else if (status === QueueStatus.COMPLETED || status === QueueStatus.SKIPPED) {
+        // Clear countdown if current item is completed
+        const item = newQueue.find(i => i.id === id);
+        if (item && item.number === currentNumber) {
+          newCallingStartedAt = null;
+        }
       }
+
+      setCurrentNumber(newCurrentNumber);
+      setCallingStartedAt(newCallingStartedAt);
+      
+      broadcastState({ 
+        queue: newQueue, 
+        currentNumber: newCurrentNumber, 
+        lastNumber, 
+        callingStartedAt: newCallingStartedAt 
+      });
       return newQueue;
     });
-  }, []);
+  }, [currentNumber, lastNumber, callingStartedAt, broadcastState]);
 
   const saveDbConfig = (config: DbConfig | null) => {
     setDbConfig(config);
     if (config) {
       setSupabase(createClient(config.url, config.key));
+      setShowGuide(false);
     } else {
       setSupabase(null);
+      setConnectionStatus('DISCONNECTED');
     }
   };
 
   const resetQueue = () => {
-    if (window.confirm('Reset data?')) {
+    if (window.confirm('Hapus semua data antrian?')) {
       setQueue([]);
       setCurrentNumber(null);
       setLastNumber(0);
+      setCallingStartedAt(null);
+      broadcastState({ queue: [], currentNumber: null, lastNumber: 0, callingStartedAt: null });
     }
   };
 
@@ -133,18 +212,48 @@ const App: React.FC = () => {
         ))}
       </div>
 
-      <nav className="fixed bottom-8 left-1/2 -translate-x-1/2 ocean-glass px-8 py-4 rounded-full shadow-2xl z-50 flex gap-10 items-center">
-        <button onClick={() => setCurrentView('REGISTRATION')} className={`flex flex-col items-center gap-1 transition-all ${currentView === 'REGISTRATION' ? 'text-cyan-300 scale-125' : 'text-white/40'}`}>
-          <UserPlus size={24} />
-          <span className="text-[8px] font-black uppercase tracking-widest">Register</span>
+      {showGuide && !dbConfig && (
+        <div className="fixed top-24 right-6 z-[60] w-72 animate-in slide-in-from-right-10 duration-500">
+            <div className="ocean-glass p-5 rounded-3xl border border-cyan-400/30 shadow-2xl relative">
+                <button onClick={() => setShowGuide(false)} className="absolute top-3 right-3 text-white/40 hover:text-white">✕</button>
+                <div className="flex items-start gap-3">
+                    <div className="p-2 bg-cyan-400 rounded-xl text-sky-950">
+                        <Info size={20} />
+                    </div>
+                    <div>
+                        <h4 className="text-sm font-black text-cyan-400 mb-1 uppercase tracking-tight">Setup Database 🌊</h4>
+                        <p className="text-[11px] text-white/70 leading-relaxed mb-3">
+                            Pastikan HP & Laptop pakai <b>Room Name</b> yang sama agar data muncul otomatis!
+                        </p>
+                        <button onClick={() => { setCurrentView('ADMIN'); setShowGuide(false); }} className="flex items-center gap-2 text-[10px] font-black bg-cyan-400 text-sky-950 px-3 py-2 rounded-lg hover:bg-cyan-300 transition-all uppercase">
+                            Ke Menu Admin <ExternalLink size={12} />
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </div>
+      )}
+
+      {lastSyncTime && (
+          <div key={lastSyncTime} className="fixed bottom-32 right-6 z-[60] animate-in fade-in slide-in-from-bottom-4 duration-500">
+              <div className="bg-emerald-500 text-white text-[10px] font-black px-4 py-2 rounded-full shadow-lg flex items-center gap-2">
+                  <RefreshCw size={12} className="animate-spin" /> DATA TER-SINKRONISASI
+              </div>
+          </div>
+      )}
+
+      <nav className="fixed bottom-8 left-1/2 -translate-x-1/2 ocean-glass px-10 py-5 rounded-[2.5rem] shadow-2xl z-50 flex gap-12 items-center border border-white/20 transition-all active:scale-95">
+        <button onClick={() => setCurrentView('REGISTRATION')} className={`flex flex-col items-center gap-1.5 transition-all ${currentView === 'REGISTRATION' ? 'text-cyan-400 scale-125' : 'text-white/30 hover:text-white/60'}`}>
+          <UserPlus size={24} strokeWidth={2.5} />
+          <span className="text-[9px] font-black uppercase tracking-widest">Register</span>
         </button>
-        <button onClick={() => setCurrentView('DISPLAY')} className={`flex flex-col items-center gap-1 transition-all ${currentView === 'DISPLAY' ? 'text-cyan-300 scale-125' : 'text-white/40'}`}>
-          <LayoutDashboard size={24} />
-          <span className="text-[8px] font-black uppercase tracking-widest">Display</span>
+        <button onClick={() => setCurrentView('DISPLAY')} className={`flex flex-col items-center gap-1.5 transition-all ${currentView === 'DISPLAY' ? 'text-cyan-400 scale-125' : 'text-white/30 hover:text-white/60'}`}>
+          <LayoutDashboard size={24} strokeWidth={2.5} />
+          <span className="text-[9px] font-black uppercase tracking-widest">Display</span>
         </button>
-        <button onClick={() => setCurrentView('ADMIN')} className={`flex flex-col items-center gap-1 transition-all ${currentView === 'ADMIN' ? 'text-cyan-300 scale-125' : 'text-white/40'}`}>
-          <Settings size={24} />
-          <span className="text-[8px] font-black uppercase tracking-widest">Admin</span>
+        <button onClick={() => setCurrentView('ADMIN')} className={`flex flex-col items-center gap-1.5 transition-all ${currentView === 'ADMIN' ? 'text-cyan-400 scale-125' : 'text-white/30 hover:text-white/60'}`}>
+          <Settings size={24} strokeWidth={2.5} />
+          <span className="text-[9px] font-black uppercase tracking-widest">Admin</span>
         </button>
       </nav>
 
@@ -153,22 +262,34 @@ const App: React.FC = () => {
            <Waves className="text-cyan-400" size={32} />
            <h1 className="text-3xl font-black text-white tracking-tighter fluctus-title">FLUCTUS</h1>
         </div>
-        <div className={`flex items-center gap-2 px-4 py-2 rounded-full text-[10px] font-bold tracking-widest border ${supabase ? 'border-cyan-400/30 text-cyan-400 bg-cyan-400/10' : 'border-white/10 text-white/30'}`}>
-           {supabase ? <Cloud size={14} /> : <CloudOff size={14} />}
-           {supabase ? 'ONLINE SYNC' : 'LOCAL MODE'}
+        <div className="flex gap-2">
+            <div className={`flex items-center gap-2 px-4 py-2 rounded-full text-[10px] font-bold tracking-widest border transition-all duration-500 ${
+              connectionStatus === 'CONNECTED' ? 'border-emerald-400 text-emerald-400 bg-emerald-400/10 shadow-[0_0_15px_rgba(52,211,153,0.2)]' :
+              connectionStatus === 'CONNECTING' ? 'border-amber-400 text-amber-400 bg-amber-400/10' :
+              'border-white/10 text-white/30 bg-white/5'
+            }`}>
+               {connectionStatus === 'CONNECTED' ? <Wifi size={14} /> : 
+                connectionStatus === 'CONNECTING' ? <Cloud size={14} className="animate-pulse" /> : 
+                <WifiOff size={14} />}
+               
+               {connectionStatus === 'CONNECTED' ? `LIVE: ${dbConfig?.roomId}` : 
+                connectionStatus === 'CONNECTING' ? 'MENGHUBUNGKAN...' : 
+                'OFFLINE MODE'}
+            </div>
         </div>
       </header>
 
       <main className="relative z-10 flex-1 w-full max-w-5xl mx-auto px-4 pb-32">
         {!isInitialized ? null : (
             currentView === 'REGISTRATION' ? <RegistrationView onRegister={addQueue} /> :
-            currentView === 'DISPLAY' ? <DisplayView queue={queue} currentNumber={currentNumber} /> :
+            currentView === 'DISPLAY' ? <DisplayView queue={queue} currentNumber={currentNumber} callingStartedAt={callingStartedAt} /> :
             <AdminView 
                 queue={queue} 
                 onUpdateStatus={updateStatus} 
                 onReset={resetQueue} 
                 dbConfig={dbConfig} 
                 onSaveDbConfig={saveDbConfig} 
+                callingStartedAt={callingStartedAt}
             />
         )}
       </main>
