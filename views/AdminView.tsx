@@ -1,7 +1,7 @@
 
 import React, { useMemo, useState, useEffect } from 'react';
 import { QueueItem, QueueStatus, DbConfig } from '../types';
-import { Phone, Check, Trash2, ArrowRightCircle, MessageCircle, Database, Share2, X, Info, Clock, Bell, BellOff } from 'lucide-react';
+import { Phone, Check, Trash2, ArrowRightCircle, MessageCircle, Database, Share2, X, Info, Clock, Bell, BellOff, ExternalLink } from 'lucide-react';
 import QRCode from 'qrcode';
 
 interface AdminViewProps {
@@ -20,7 +20,7 @@ const AdminView: React.FC<AdminViewProps> = ({ queue, onUpdateStatus, onReset, d
   const [showQrModal, setShowQrModal] = useState(false);
   const [qrDataUrl, setQrDataUrl] = useState('');
   const [timeLeft, setTimeLeft] = useState<number | null>(null);
-  const [autoNotify, setAutoNotify] = useState(false); // New: Toggle for Auto WA
+  const [autoNotify, setAutoNotify] = useState(false);
   
   const [tempUrl, setTempUrl] = useState(dbConfig?.url || '');
   const [tempKey, setTempKey] = useState(dbConfig?.key || '');
@@ -54,8 +54,15 @@ const AdminView: React.FC<AdminViewProps> = ({ queue, onUpdateStatus, onReset, d
   }, [showQrModal, dbConfig]);
 
   const sendWhatsApp = (item: QueueItem) => {
+    const cleanPhone = item.phone.replace(/[^0-9]/g, '');
+    // Formatting number: ensure it starts with country code (default 62 if starts with 0)
+    const formattedPhone = cleanPhone.startsWith('0') ? '62' + cleanPhone.slice(1) : cleanPhone;
+    
     const msg = encodeURIComponent(`🌊 Halo *${item.name}*!\n\nNomer antrian *${item.number}* dipanggil! ✨\nSilakan segera ke Photobooth ya.`);
-    window.open(`https://wa.me/${item.phone.replace(/[^0-9]/g, '')}?text=${msg}`, '_blank');
+    
+    // Using api.whatsapp.com which is often more reliable than wa.me on desktops
+    const waUrl = `https://api.whatsapp.com/send?phone=${formattedPhone}&text=${msg}`;
+    window.open(waUrl, '_blank');
   };
 
   const handleCallNext = () => {
@@ -63,9 +70,9 @@ const AdminView: React.FC<AdminViewProps> = ({ queue, onUpdateStatus, onReset, d
       const nextItem = waitingList[0];
       onUpdateStatus(nextItem.id, QueueStatus.CALLING);
       
-      // If Auto Notify is ON, trigger WA immediately
       if (autoNotify) {
-        setTimeout(() => sendWhatsApp(nextItem), 500);
+        // Short delay to let the UI update first
+        setTimeout(() => sendWhatsApp(nextItem), 600);
       }
     }
   };
@@ -87,6 +94,14 @@ const AdminView: React.FC<AdminViewProps> = ({ queue, onUpdateStatus, onReset, d
 
   return (
     <div className="space-y-8">
+      {/* Alert Info for WhatsApp limitation */}
+      <div className="bg-amber-400/10 border border-amber-400/30 p-4 rounded-2xl flex items-start gap-3 animate-in fade-in slide-in-from-top-4 duration-500">
+        <Info className="text-amber-400 shrink-0 mt-0.5" size={18} />
+        <p className="text-[11px] text-amber-200/80 leading-relaxed font-medium">
+          <strong className="text-amber-400">INFO WHATSAPP:</strong> Karena kebijakan keamanan WhatsApp, sistem hanya bisa menyiapkan pesan otomatis. Anda tetap harus menekan tombol <span className="underline decoration-amber-400">Kirim/Send</span> di aplikasi WhatsApp setelah jendela terbuka.
+        </p>
+      </div>
+
       <div className="ocean-glass p-6 rounded-[2rem] flex flex-wrap items-center justify-between gap-4 border border-white/20">
         <div className="flex gap-3">
             <button onClick={() => setShowDbModal(true)} className="flex items-center gap-2 px-4 py-3 bg-white/5 hover:bg-white/10 rounded-xl text-xs font-bold tracking-widest transition-all">
@@ -95,10 +110,10 @@ const AdminView: React.FC<AdminViewProps> = ({ queue, onUpdateStatus, onReset, d
             <button 
               onClick={() => setAutoNotify(!autoNotify)} 
               className={`flex items-center gap-2 px-4 py-3 rounded-xl text-[10px] font-black tracking-widest transition-all border ${
-                autoNotify ? 'bg-emerald-500/20 text-emerald-400 border-emerald-500/50' : 'bg-white/5 text-white/30 border-white/10'
+                autoNotify ? 'bg-emerald-500/20 text-emerald-400 border-emerald-500/50 shadow-[0_0_15px_rgba(52,211,153,0.2)]' : 'bg-white/5 text-white/30 border-white/10'
               }`}
             >
-                {autoNotify ? <Bell size={14} /> : <BellOff size={14} />}
+                {autoNotify ? <Bell size={14} className="animate-bounce" /> : <BellOff size={14} />}
                 AUTO WA: {autoNotify ? 'ON' : 'OFF'}
             </button>
         </div>
@@ -106,9 +121,9 @@ const AdminView: React.FC<AdminViewProps> = ({ queue, onUpdateStatus, onReset, d
           <button 
             onClick={handleCallNext} 
             disabled={waitingList.length === 0} 
-            className="px-8 py-4 bg-cyan-400 hover:bg-cyan-300 text-sky-950 font-black rounded-xl disabled:opacity-30 transition-all text-sm uppercase shadow-lg shadow-cyan-400/20 active:scale-95"
+            className="px-8 py-4 bg-cyan-400 hover:bg-cyan-300 text-sky-950 font-black rounded-xl disabled:opacity-30 transition-all text-sm uppercase shadow-lg shadow-cyan-400/20 active:scale-95 flex items-center gap-2"
           >
-            CALL NEXT
+            CALL NEXT <ArrowRightCircle size={18} />
           </button>
           <button onClick={onReset} className="p-4 bg-rose-500/10 text-rose-400 rounded-xl hover:bg-rose-500/20 transition-colors"><Trash2 size={20} /></button>
         </div>
@@ -128,16 +143,21 @@ const AdminView: React.FC<AdminViewProps> = ({ queue, onUpdateStatus, onReset, d
                         <span className="text-6xl font-black">{item.number < 10 ? `0${item.number}` : item.number}</span>
                         <div>
                             <div className="font-black text-xl">{item.name}</div>
+                            <div className="text-[10px] font-bold opacity-60 mb-1">{item.phone}</div>
                             {timeLeft !== null && (
-                                <div className={`mt-1 flex items-center gap-1.5 px-3 py-1 rounded-full text-[10px] font-black tracking-widest border ${timeLeft <= 10 ? 'bg-rose-500 text-white animate-pulse border-none shadow-lg shadow-rose-500/40' : 'bg-sky-950/10 border-sky-950/20'}`}>
+                                <div className={`flex items-center gap-1.5 px-3 py-1 rounded-full text-[10px] font-black tracking-widest border ${timeLeft <= 10 ? 'bg-rose-500 text-white animate-pulse border-none shadow-lg shadow-rose-500/40' : 'bg-sky-950/10 border-sky-950/20'}`}>
                                     <Clock size={12} /> {formatTime(timeLeft)}
                                 </div>
                             )}
                         </div>
                     </div>
                     <div className="flex flex-col gap-2 relative z-10">
-                        <button onClick={() => sendWhatsApp(item)} title="Kirim WA Manual" className="p-3 bg-sky-950 text-cyan-400 rounded-xl hover:scale-110 transition-all shadow-lg active:scale-90"><MessageCircle size={20} /></button>
-                        <button onClick={() => onUpdateStatus(item.id, QueueStatus.COMPLETED)} title="Selesai" className="p-3 bg-white text-sky-950 rounded-xl hover:scale-110 transition-all shadow-lg active:scale-90"><Check size={20} /></button>
+                        <button onClick={() => sendWhatsApp(item)} title="Kirim WA" className="p-3 bg-sky-950 text-cyan-400 rounded-xl hover:scale-110 transition-all shadow-lg active:scale-90 flex items-center justify-center">
+                          <MessageCircle size={20} />
+                        </button>
+                        <button onClick={() => onUpdateStatus(item.id, QueueStatus.COMPLETED)} title="Selesai" className="p-3 bg-white text-sky-950 rounded-xl hover:scale-110 transition-all shadow-lg active:scale-90 flex items-center justify-center">
+                          <Check size={20} />
+                        </button>
                     </div>
                 </div>
             ))}
